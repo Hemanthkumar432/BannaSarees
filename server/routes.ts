@@ -1,71 +1,24 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
-import { insertProductSchema, insertOrderSchema, insertCartItemSchema } from "@shared/schema";
-import multer from "multer";
-import path from "path";
-import fs from "fs";
-
-// Configure multer for file uploads
-const uploadsDir = path.join(process.cwd(), "uploads");
-if (!fs.existsSync(uploadsDir)) {
-  fs.mkdirSync(uploadsDir, { recursive: true });
-}
-
-const storage_multer = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, uploadsDir);
-  },
-  filename: (req, file, cb) => {
-    const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1E9);
-    cb(null, file.fieldname + "-" + uniqueSuffix + path.extname(file.originalname));
-  }
-});
-
-const upload = multer({ 
-  storage: storage_multer,
-  limits: {
-    fileSize: 10 * 1024 * 1024 // 10MB limit
-  },
-  fileFilter: (req, file, cb) => {
-    if (file.mimetype.startsWith('image/')) {
-      cb(null, true);
-    } else {
-      cb(new Error('Only image files are allowed'));
-    }
-  }
-});
+import { insertProductSchema, insertCartItemSchema, insertOrderSchema } from "@shared/schema";
+import { z } from "zod";
 
 export async function registerRoutes(app: Express): Promise<Server> {
-  // Serve uploaded files
-  app.use('/uploads', (req, res, next) => {
-    // Add CORS headers for uploaded files
-    res.header('Access-Control-Allow-Origin', '*');
-    res.header('Access-Control-Allow-Methods', 'GET');
-    next();
-  }, express.static(uploadsDir));
-
-  // Categories routes
-  app.get("/api/categories", async (req, res) => {
-    try {
-      const categories = await storage.getCategories();
-      res.json(categories);
-    } catch (error) {
-      res.status(500).json({ message: "Failed to fetch categories" });
-    }
-  });
-
-  // Products routes
+  // Product routes
   app.get("/api/products", async (req, res) => {
     try {
-      const { categoryId, featured, search } = req.query;
-      const filters: any = {};
+      const { category, search } = req.query;
       
-      if (categoryId) filters.categoryId = parseInt(categoryId as string);
-      if (featured) filters.featured = featured === 'true';
-      if (search) filters.search = search as string;
+      let products;
+      if (search) {
+        products = await storage.searchProducts(search as string);
+      } else if (category) {
+        products = await storage.getProductsByCategory(category as string);
+      } else {
+        products = await storage.getAllProducts();
+      }
       
-      const products = await storage.getProducts(filters);
       res.json(products);
     } catch (error) {
       res.status(500).json({ message: "Failed to fetch products" });
@@ -75,66 +28,47 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.get("/api/products/:id", async (req, res) => {
     try {
       const id = parseInt(req.params.id);
-      const product = await storage.getProductById(id);
+      const product = await storage.getProduct(id);
+      
       if (!product) {
         return res.status(404).json({ message: "Product not found" });
       }
+      
       res.json(product);
     } catch (error) {
       res.status(500).json({ message: "Failed to fetch product" });
     }
   });
 
-  app.post("/api/products", upload.array('images', 5), async (req, res) => {
+  app.post("/api/products", async (req, res) => {
     try {
-      const files = req.files as Express.Multer.File[];
-      const images = files ? files.map(file => `/uploads/${file.filename}`) : [];
-      
-      const productData = {
-        ...req.body,
-        price: req.body.price.toString(),
-        categoryId: parseInt(req.body.categoryId),
-        stock: parseInt(req.body.stock),
-        featured: req.body.featured === 'true',
-        newArrival: req.body.newArrival === 'true',
-        limitedEdition: req.body.limitedEdition === 'true',
-        images,
-        sku: `BSK${Date.now()}`
-      };
-
-      const validatedProduct = insertProductSchema.parse(productData);
-      const product = await storage.createProduct(validatedProduct);
+      const productData = insertProductSchema.parse(req.body);
+      const product = await storage.createProduct(productData);
       res.status(201).json(product);
     } catch (error) {
-      res.status(400).json({ message: error instanceof Error ? error.message : "Failed to create product" });
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: "Invalid product data", errors: error.errors });
+      }
+      res.status(500).json({ message: "Failed to create product" });
     }
   });
 
-  app.put("/api/products/:id", upload.array('images', 5), async (req, res) => {
+  app.put("/api/products/:id", async (req, res) => {
     try {
       const id = parseInt(req.params.id);
-      const files = req.files as Express.Multer.File[];
-      
-      const updateData: any = { ...req.body };
-      
-      if (req.body.price) updateData.price = req.body.price.toString();
-      if (req.body.categoryId) updateData.categoryId = parseInt(req.body.categoryId);
-      if (req.body.stock) updateData.stock = parseInt(req.body.stock);
-      if (req.body.featured !== undefined) updateData.featured = req.body.featured === 'true';
-      if (req.body.newArrival !== undefined) updateData.newArrival = req.body.newArrival === 'true';
-      if (req.body.limitedEdition !== undefined) updateData.limitedEdition = req.body.limitedEdition === 'true';
-      
-      if (files && files.length > 0) {
-        updateData.images = files.map(file => `/uploads/${file.filename}`);
-      }
-
+      const updateData = insertProductSchema.partial().parse(req.body);
       const product = await storage.updateProduct(id, updateData);
+      
       if (!product) {
         return res.status(404).json({ message: "Product not found" });
       }
+      
       res.json(product);
     } catch (error) {
-      res.status(400).json({ message: error instanceof Error ? error.message : "Failed to update product" });
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: "Invalid product data", errors: error.errors });
+      }
+      res.status(500).json({ message: "Failed to update product" });
     }
   });
 
@@ -142,9 +76,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const id = parseInt(req.params.id);
       const success = await storage.deleteProduct(id);
+      
       if (!success) {
         return res.status(404).json({ message: "Product not found" });
       }
+      
       res.json({ message: "Product deleted successfully" });
     } catch (error) {
       res.status(500).json({ message: "Failed to delete product" });
@@ -152,32 +88,30 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Cart routes
-  app.get("/api/cart/:sessionId", async (req, res) => {
+  app.get("/api/cart", async (req, res) => {
     try {
-      const sessionId = req.params.sessionId;
+      const sessionId = req.headers["x-session-id"] as string || "default-session";
       const cartItems = await storage.getCartItems(sessionId);
-      
-      // Get product details for each cart item
-      const cartWithProducts = await Promise.all(
-        cartItems.map(async (item) => {
-          const product = await storage.getProductById(item.productId);
-          return { ...item, product };
-        })
-      );
-      
-      res.json(cartWithProducts);
+      res.json(cartItems);
     } catch (error) {
-      res.status(500).json({ message: "Failed to fetch cart" });
+      res.status(500).json({ message: "Failed to fetch cart items" });
     }
   });
 
   app.post("/api/cart", async (req, res) => {
     try {
-      const validatedItem = insertCartItemSchema.parse(req.body);
-      const cartItem = await storage.addToCart(validatedItem);
+      const sessionId = req.headers["x-session-id"] as string || "default-session";
+      const cartItemData = insertCartItemSchema.parse({
+        ...req.body,
+        sessionId
+      });
+      const cartItem = await storage.addToCart(cartItemData);
       res.status(201).json(cartItem);
     } catch (error) {
-      res.status(400).json({ message: error instanceof Error ? error.message : "Failed to add to cart" });
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: "Invalid cart item data", errors: error.errors });
+      }
+      res.status(500).json({ message: "Failed to add item to cart" });
     }
   });
 
@@ -185,13 +119,24 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const id = parseInt(req.params.id);
       const { quantity } = req.body;
+      
+      if (typeof quantity !== "number" || quantity < 0) {
+        return res.status(400).json({ message: "Invalid quantity" });
+      }
+      
       const cartItem = await storage.updateCartItem(id, quantity);
+      
+      if (quantity === 0) {
+        return res.json({ message: "Item removed from cart" });
+      }
+      
       if (!cartItem) {
         return res.status(404).json({ message: "Cart item not found" });
       }
+      
       res.json(cartItem);
     } catch (error) {
-      res.status(400).json({ message: "Failed to update cart item" });
+      res.status(500).json({ message: "Failed to update cart item" });
     }
   });
 
@@ -199,18 +144,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const id = parseInt(req.params.id);
       const success = await storage.removeFromCart(id);
+      
       if (!success) {
         return res.status(404).json({ message: "Cart item not found" });
       }
+      
       res.json({ message: "Item removed from cart" });
     } catch (error) {
-      res.status(500).json({ message: "Failed to remove from cart" });
+      res.status(500).json({ message: "Failed to remove cart item" });
     }
   });
 
-  app.delete("/api/cart/session/:sessionId", async (req, res) => {
+  app.delete("/api/cart", async (req, res) => {
     try {
-      const sessionId = req.params.sessionId;
+      const sessionId = req.headers["x-session-id"] as string || "default-session";
       await storage.clearCart(sessionId);
       res.json({ message: "Cart cleared" });
     } catch (error) {
@@ -218,10 +165,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Orders routes
+  // Order routes
   app.get("/api/orders", async (req, res) => {
     try {
-      const orders = await storage.getOrders();
+      const orders = await storage.getAllOrders();
       res.json(orders);
     } catch (error) {
       res.status(500).json({ message: "Failed to fetch orders" });
@@ -231,14 +178,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.get("/api/orders/:id", async (req, res) => {
     try {
       const id = parseInt(req.params.id);
-      const order = await storage.getOrderById(id);
+      const order = await storage.getOrder(id);
+      
       if (!order) {
         return res.status(404).json({ message: "Order not found" });
       }
       
-      const orderItems = await storage.getOrderItems(id);
-      const orderWithItems = { ...order, items: orderItems };
-      res.json(orderWithItems);
+      res.json(order);
     } catch (error) {
       res.status(500).json({ message: "Failed to fetch order" });
     }
@@ -246,35 +192,60 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.post("/api/orders", async (req, res) => {
     try {
-      const { order, items } = req.body;
-      const validatedOrder = insertOrderSchema.parse(order);
-      const createdOrder = await storage.createOrder(validatedOrder);
-      
-      // Create order items
-      for (const item of items) {
-        await storage.createOrderItem({
-          ...item,
-          orderId: createdOrder.id
-        });
-      }
-      
-      res.status(201).json(createdOrder);
+      const orderData = insertOrderSchema.parse(req.body);
+      const order = await storage.createOrder(orderData);
+      res.status(201).json(order);
     } catch (error) {
-      res.status(400).json({ message: error instanceof Error ? error.message : "Failed to create order" });
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: "Invalid order data", errors: error.errors });
+      }
+      res.status(500).json({ message: "Failed to create order" });
     }
   });
 
-  app.put("/api/orders/:id/status", async (req, res) => {
+  app.patch("/api/orders/:id/status", async (req, res) => {
     try {
       const id = parseInt(req.params.id);
       const { status } = req.body;
+      
+      if (!status) {
+        return res.status(400).json({ message: "Status is required" });
+      }
+      
       const order = await storage.updateOrderStatus(id, status);
+      
       if (!order) {
         return res.status(404).json({ message: "Order not found" });
       }
+      
       res.json(order);
     } catch (error) {
-      res.status(400).json({ message: "Failed to update order status" });
+      res.status(500).json({ message: "Failed to update order status" });
+    }
+  });
+
+  // Statistics route for admin dashboard
+  app.get("/api/stats", async (req, res) => {
+    try {
+      const products = await storage.getAllProducts();
+      const orders = await storage.getAllOrders();
+      
+      const totalProducts = products.length;
+      const lowStock = products.filter(p => p.stockQuantity < 10).length;
+      const outOfStock = products.filter(p => p.stockQuantity === 0).length;
+      const totalOrders = orders.length;
+      const pendingOrders = orders.filter(o => o.status === "pending").length;
+      
+      res.json({
+        totalProducts,
+        lowStock,
+        outOfStock,
+        totalOrders,
+        pendingOrders,
+        recentOrders: orders.slice(0, 5)
+      });
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch statistics" });
     }
   });
 

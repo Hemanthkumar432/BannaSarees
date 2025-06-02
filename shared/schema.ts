@@ -1,11 +1,11 @@
-import { pgTable, text, serial, integer, boolean, decimal, timestamp } from "drizzle-orm/pg-core";
+import { pgTable, text, serial, integer, boolean, timestamp, decimal } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
-export const categories = pgTable("categories", {
+export const users = pgTable("users", {
   id: serial("id").primaryKey(),
-  name: text("name").notNull().unique(),
-  description: text("description"),
+  username: text("username").notNull().unique(),
+  password: text("password").notNull(),
 });
 
 export const products = pgTable("products", {
@@ -13,15 +13,19 @@ export const products = pgTable("products", {
   name: text("name").notNull(),
   description: text("description").notNull(),
   price: decimal("price", { precision: 10, scale: 2 }).notNull(),
-  categoryId: integer("category_id").references(() => categories.id).notNull(),
-  stock: integer("stock").notNull().default(0),
-  images: text("images").array().default([]),
-  featured: boolean("featured").default(false),
-  newArrival: boolean("new_arrival").default(false),
-  limitedEdition: boolean("limited_edition").default(false),
-  status: text("status").notNull().default("active"),
-  sku: text("sku").notNull().unique(),
+  discountPercentage: integer("discount_percentage").default(0),
+  category: text("category").notNull(),
+  stockQuantity: integer("stock_quantity").notNull().default(0),
+  imageUrl: text("image_url"),
+  isActive: boolean("is_active").default(true),
   createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const cartItems = pgTable("cart_items", {
+  id: serial("id").primaryKey(),
+  productId: integer("product_id").notNull(),
+  quantity: integer("quantity").notNull().default(1),
+  sessionId: text("session_id").notNull(),
 });
 
 export const orders = pgTable("orders", {
@@ -29,29 +33,15 @@ export const orders = pgTable("orders", {
   customerName: text("customer_name").notNull(),
   customerEmail: text("customer_email").notNull(),
   customerPhone: text("customer_phone"),
-  shippingAddress: text("shipping_address").notNull(),
-  total: decimal("total", { precision: 10, scale: 2 }).notNull(),
-  status: text("status").notNull().default("pending"),
+  totalAmount: decimal("total_amount", { precision: 10, scale: 2 }).notNull(),
+  status: text("status").notNull().default("pending"), // pending, paid, shipped, delivered
+  items: text("items").notNull(), // JSON string of order items
   createdAt: timestamp("created_at").defaultNow(),
 });
 
-export const orderItems = pgTable("order_items", {
-  id: serial("id").primaryKey(),
-  orderId: integer("order_id").references(() => orders.id).notNull(),
-  productId: integer("product_id").references(() => products.id).notNull(),
-  quantity: integer("quantity").notNull(),
-  price: decimal("price", { precision: 10, scale: 2 }).notNull(),
-});
-
-export const cartItems = pgTable("cart_items", {
-  id: serial("id").primaryKey(),
-  sessionId: text("session_id").notNull(),
-  productId: integer("product_id").references(() => products.id).notNull(),
-  quantity: integer("quantity").notNull(),
-});
-
-export const insertCategorySchema = createInsertSchema(categories).omit({
-  id: true,
+export const insertUserSchema = createInsertSchema(users).pick({
+  username: true,
+  password: true,
 });
 
 export const insertProductSchema = createInsertSchema(products).omit({
@@ -59,27 +49,23 @@ export const insertProductSchema = createInsertSchema(products).omit({
   createdAt: true,
 });
 
+export const insertCartItemSchema = createInsertSchema(cartItems).omit({
+  id: true,
+});
+
 export const insertOrderSchema = createInsertSchema(orders).omit({
   id: true,
   createdAt: true,
 });
 
-export const insertOrderItemSchema = createInsertSchema(orderItems).omit({
-  id: true,
-});
+export type InsertUser = z.infer<typeof insertUserSchema>;
+export type User = typeof users.$inferSelect;
 
-export const insertCartItemSchema = createInsertSchema(cartItems).omit({
-  id: true,
-});
-
-export type Category = typeof categories.$inferSelect;
+export type InsertProduct = z.infer<typeof insertProductSchema>;
 export type Product = typeof products.$inferSelect;
-export type Order = typeof orders.$inferSelect;
-export type OrderItem = typeof orderItems.$inferSelect;
+
+export type InsertCartItem = z.infer<typeof insertCartItemSchema>;
 export type CartItem = typeof cartItems.$inferSelect;
 
-export type InsertCategory = z.infer<typeof insertCategorySchema>;
-export type InsertProduct = z.infer<typeof insertProductSchema>;
 export type InsertOrder = z.infer<typeof insertOrderSchema>;
-export type InsertOrderItem = z.infer<typeof insertOrderItemSchema>;
-export type InsertCartItem = z.infer<typeof insertCartItemSchema>;
+export type Order = typeof orders.$inferSelect;
